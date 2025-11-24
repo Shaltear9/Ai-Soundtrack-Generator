@@ -1,0 +1,5 @@
+{
+  "name": "AI Soundtrack Generator",
+  "description": "An application that analyzes a film script, generates tailored music prompts for each scene using AI, creates audio previews, and allows you to download the results.",
+  "requestFramePermissions": []
+}

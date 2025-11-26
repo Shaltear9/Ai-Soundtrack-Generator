@@ -43,7 +43,7 @@ interface TaskInfoResponse {
 }
 
 /**
- * 生成音乐 - 使用Suno API
+ * Generate music using Suno API
  */
 export async function generateMusic(
     prompt: string,
@@ -60,8 +60,7 @@ export async function generateMusic(
         title: title || "Generated Soundtrack",
         customMode: true,
         instrumental: instrumental,
-        model: "V5", // 使用V3.5模型，根据需求可以改为V4
-        callBackUrl:"ai.shaltearasg.xyz/api/suno"
+        model: "V5"
     };
 
     const response = await fetch(`${SUNO_API_BASE}/api/v1/generate`, {
@@ -88,15 +87,15 @@ export async function generateMusic(
 }
 
 /**
- * 轮询任务状态直到完成或失败
+ * Poll task status until completion or failure
  */
 export async function pollForMusic(
     taskId: string,
     apiKey: string,
     onProgress?: (status: string, progress?: number) => void
 ): Promise<SunoTask[]> {
-    const MAX_ATTEMPTS = 50; // 最大尝试次数（10分钟）
-    const INTERVAL = 5000; // 5秒间隔
+    const MAX_ATTEMPTS = 60; // Maximum attempts (10 minutes)
+    const INTERVAL = 5000; // 5 second interval
 
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
         await new Promise(resolve => setTimeout(resolve, INTERVAL));
@@ -115,6 +114,9 @@ export async function pollForMusic(
 
             if (!response.ok) {
                 console.warn(`Polling request failed (${response.status}), attempt ${attempt + 1}`);
+                if (onProgress) {
+                    onProgress(`Request failed, retrying... (${attempt + 1}/${MAX_ATTEMPTS})`);
+                }
                 continue;
             }
 
@@ -122,51 +124,54 @@ export async function pollForMusic(
 
             if (result.code !== 200) {
                 console.warn(`API returned error code ${result.code}: ${result.msg}`);
+                if (onProgress) {
+                    onProgress(`API error, retrying... (${attempt + 1}/${MAX_ATTEMPTS})`);
+                }
                 continue;
             }
 
             const taskData = result.data;
             const status = taskData.status;
 
-            // 更新进度状态
+            // Update progress status
             let progressMessage = `Status: ${status}`;
             let progressValue: number | undefined;
 
             switch (status) {
                 case 'PENDING':
-                    progressMessage = "任务排队中...";
+                    progressMessage = "Task queued...";
                     progressValue = 10;
                     break;
                 case 'TEXT_SUCCESS':
-                    progressMessage = "文本生成完成，开始生成音频...";
+                    progressMessage = "Text generation complete, generating audio...";
                     progressValue = 40;
                     break;
                 case 'FIRST_SUCCESS':
-                    progressMessage = "第一部分音频生成完成...";
+                    progressMessage = "First part audio generated...";
                     progressValue = 70;
                     break;
                 case 'SUCCESS':
-                    progressMessage = "音频生成完成！";
+                    progressMessage = "Audio generation complete!";
                     progressValue = 100;
                     break;
                 case 'CREATE_TASK_FAILED':
                 case 'GENERATE_AUDIO_FAILED':
                 case 'CALLBACK_EXCEPTION':
                 case 'SENSITIVE_WORD_ERROR':
-                    throw new Error(`生成失败: ${taskData.errorMessage || status}`);
+                    throw new Error(`Generation failed: ${taskData.errorMessage || status}`);
             }
 
             if (onProgress) {
                 onProgress(progressMessage, progressValue);
             }
 
-            // 检查是否完成
+            // Check if completed
             if (status === 'SUCCESS') {
                 const sunoData = taskData.response?.sunoData;
                 if (sunoData && sunoData.length > 0) {
                     console.log("Suno generation completed successfully:", sunoData);
 
-                    // 转换为SunoTask格式
+                    // Convert to SunoTask format
                     return sunoData.map(track => ({
                         id: track.id,
                         status: 'SUCCESS',
@@ -177,36 +182,36 @@ export async function pollForMusic(
                         prompt: track.prompt
                     }));
                 } else {
-                    throw new Error("生成完成但没有返回音频数据");
+                    throw new Error("Generation completed but no audio data returned");
                 }
             }
 
-            // 处理失败状态
+            // Handle failure states
             if (status.includes('FAILED') || status.includes('ERROR')) {
-                throw new Error(`生成失败: ${taskData.errorMessage || status}`);
+                throw new Error(`Generation failed: ${taskData.errorMessage || status}`);
             }
 
         } catch (error) {
             if (error instanceof Error) {
-                // 如果是明确的错误，直接抛出
-                if (error.message.includes('生成失败')) {
+                // If it's a clear error, throw directly
+                if (error.message.includes('Generation failed')) {
                     throw error;
                 }
-                // 网络错误等暂时性问题，继续重试
+                // Network errors and other temporary issues, continue retrying
                 console.warn(`Polling attempt ${attempt + 1} failed:`, error.message);
             }
 
             if (onProgress) {
-                onProgress(`连接问题，重试中... (${attempt + 1}/${MAX_ATTEMPTS})`);
+                onProgress(`Connection issue, retrying... (${attempt + 1}/${MAX_ATTEMPTS})`);
             }
         }
     }
 
-    throw new Error("生成超时，请稍后重试");
+    throw new Error("Generation timeout, please try again later");
 }
 
 /**
- * 获取任务信息（单次查询，不轮询）
+ * Get task info (single query, no polling)
  */
 export async function getTaskInfo(taskId: string, apiKey: string): Promise<TaskInfoResponse['data']> {
     const response = await fetch(
@@ -221,13 +226,13 @@ export async function getTaskInfo(taskId: string, apiKey: string): Promise<TaskI
     );
 
     if (!response.ok) {
-        throw new Error(`获取任务信息失败: ${response.status}`);
+        throw new Error(`Failed to get task info: ${response.status}`);
     }
 
     const result: TaskInfoResponse = await response.json();
 
     if (result.code !== 200) {
-        throw new Error(`API错误: ${result.msg}`);
+        throw new Error(`API error: ${result.msg}`);
     }
 
     return result.data;

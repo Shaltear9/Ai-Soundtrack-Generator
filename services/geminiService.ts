@@ -14,7 +14,7 @@ function getAiClient(): GoogleGenAI {
         ai = new GoogleGenAI({ 
             apiKey: API_KEY,
             httpOptions: {
-               baseUrl: "https://edge.tb.api.mkeai.com",
+               baseUrl: "https://yunwu.ai",
             },
             });
     }

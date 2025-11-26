@@ -60,7 +60,8 @@ export async function generateMusic(
         title: title || "Generated Soundtrack",
         customMode: true,
         instrumental: instrumental,
-        model: "V3_5" // 使用V3.5模型，根据需求可以改为V4
+        model: "V5", // 使用V3.5模型，根据需求可以改为V4
+        callBackUrl:"ai.shaltearasg.xyz/api/suno"
     };
 
     const response = await fetch(`${SUNO_API_BASE}/api/v1/generate`, {

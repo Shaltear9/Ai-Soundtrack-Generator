@@ -1,76 +1,155 @@
-
-import { GoogleGenAI, Type } from "@google/genai";
+// services/geminiService.ts
 import type { ScriptAnalysis } from '../types';
 
-// Lazily initialize the AI client to avoid errors on module load.
-let ai: GoogleGenAI | null = null;
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.API_KEY;
 
-function getAiClient(): GoogleGenAI {
-    if (!ai) {
-        const API_KEY = process.env.API_KEY;
-        if (!API_KEY) {
-            throw new Error("API_KEY environment variable not set. Please ensure it's configured.");
-        }
-        ai = new GoogleGenAI({ 
-            apiKey: API_KEY,
-            httpOptions: {
-               baseUrl: "https://yunwu.ai",
-            },
-            });
-    }
-    return ai;
+if (!GEMINI_API_KEY) {
+    console.warn('GEMINI_API_KEY is not set. Multimodal analysis will fail without it.');
 }
 
-export async function analyzeScriptAndGeneratePrompts(scriptText: string): Promise<ScriptAnalysis> {
-    const aiClient = getAiClient();
-    const model = "gemini-2.5-flash";
+// 上传视频文件到 Gemini File API，返回 { uri, mimeType }
+async function uploadVideoToGemini(videoFile: File) {
+    if (!GEMINI_API_KEY) {
+        throw new Error('GEMINI_API_KEY is not configured');
+    }
 
-    const prompt = `
-        You are a professional film score composer.
-        Analyze the following movie script or video description.
-        
-        Your goal is to create a **single, cohesive music generation prompt** that acts as the soundtrack for the entire video.
-        
-        Output JSON with the following fields:
-        1.  **summary**: A brief 1-sentence summary of the video's content.
-        2.  **mood**: 2-3 words describing the emotional tone (e.g., "Melancholic, Hopeful").
-        3.  **title**: A creative title for the soundtrack.
-        4.  **music_prompt**: A detailed description for an AI music generator (Suno). 
-            - Focus on instruments, tempo, genre, and atmosphere.
-            - Do NOT include lyrics. 
-            - Keep it under 450 characters.
-            - Example: "A cinematic orchestral piece building from a quiet piano intro into a heroic crescendo with strings and brass, ending on a triumphant note."
+    const formData = new FormData();
+    formData.append('file', videoFile);
+    // 可选：formData.append('fileId', videoFile.name);
 
-        Here is the script:
-        ---
-        ${scriptText}
-        ---
-    `;
-
-    const response = await aiClient.models.generateContent({
-        model: model,
-        contents: prompt,
-        config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                    summary: { type: Type.STRING },
-                    mood: { type: Type.STRING },
-                    title: { type: Type.STRING },
-                    music_prompt: { type: Type.STRING }
-                },
-                required: ["summary", "mood", "title", "music_prompt"]
-            }
+    const res = await fetch(
+        `https://generativelanguage.googleapis.com/upload/v1beta/files?key=${GEMINI_API_KEY}`,
+        {
+            method: 'POST',
+            body: formData,
         }
-    });
+    );
 
-    const jsonText = response.text.trim();
+    if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Failed to upload video: ${res.status} - ${text}`);
+    }
+
+    const data = await res.json();
+    // 典型返回格式：{ file: { uri, mimeType, ... } }
+    if (!data.file || !data.file.uri) {
+        throw new Error('Upload succeeded but no file URI returned from Gemini.');
+    }
+
+    return {
+        uri: data.file.uri as string,
+        mimeType: data.file.mimeType as string,
+    };
+}
+
+/**
+ * 多模态分析：
+ * - scriptText: 文本脚本或描述（可以为空）
+ * - videoFile: 上传的视频文件（可以为空）
+ *
+ * 二者只要有一个存在就可以工作；如果都有，则做视频 + 文本联合理解。
+ */
+export async function analyzeScriptAndGeneratePrompts(
+    scriptText: string,
+    videoFile?: File
+): Promise<ScriptAnalysis> {
+    if (!GEMINI_API_KEY) {
+        throw new Error('GEMINI_API_KEY is not configured');
+    }
+
+    const parts: any[] = [];
+
+    // 1. 如果有视频，先上传，再把 fileData 放入 parts
+    if (videoFile) {
+        const uploaded = await uploadVideoToGemini(videoFile);
+        parts.push({
+            fileData: {
+                fileUri: uploaded.uri,
+                mimeType: uploaded.mimeType,
+            },
+        });
+    }
+
+    // 2. 系统指令 + 文本内容
+    const systemPrompt = `
+You are a film and soundtrack expert. Analyze the given video (if present) together with the script/description.
+
+Return ONLY a strict JSON object with the following fields (no markdown, no extra text):
+{
+  "summary": "2-4 sentences summarizing the story and visuals.",
+  "music_prompt": "1-2 sentences describing the ideal background music.",
+  "mood": "short phrase describing overall mood, e.g. 'tense and mysterious'.",
+  "title": "short cinematic title for the soundtrack."
+}
+`.trim();
+
+    parts.push(
+        { text: systemPrompt },
+        {
+            text:
+                scriptText && scriptText.trim().length > 0
+                    ? `SCRIPT_OR_DESCRIPTION:\n${scriptText}`
+                    : 'No script text provided. Infer as much as you can from the video alone.',
+        }
+    );
+
+    // 3. 调用 Gemini 多模态模型
+    const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                contents: [
+                    {
+                        role: 'user',
+                        parts,
+                    },
+                ],
+            }),
+        }
+    );
+
+    if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Gemini API error: ${res.status} - ${text}`);
+    }
+
+    const data = await res.json();
+
+    const rawText =
+        data.candidates?.[0]?.content?.parts?.[0]?.text ??
+        data.candidates?.[0]?.content?.parts
+            ?.map((p: any) => p.text)
+            .filter(Boolean)
+            .join('\n');
+
+    if (!rawText) {
+        throw new Error('No text content returned from Gemini.');
+    }
+
+    // 4. 尝试从模型返回中抠出 JSON 并解析
     try {
-        const parsedResult = JSON.parse(jsonText);
-        return parsedResult as ScriptAnalysis;
+        const jsonStart = rawText.indexOf('{');
+        const jsonEnd = rawText.lastIndexOf('}');
+        const jsonString =
+            jsonStart >= 0 && jsonEnd >= 0
+                ? rawText.slice(jsonStart, jsonEnd + 1)
+                : rawText;
+
+        const parsed = JSON.parse(jsonString);
+
+        // 简单的类型兜底
+        const result: ScriptAnalysis = {
+            summary: parsed.summary ?? '',
+            music_prompt: parsed.music_prompt ?? '',
+            mood: parsed.mood ?? '',
+            title: parsed.title ?? '',
+        };
+
+        return result;
     } catch (e) {
-        console.error("Failed to parse JSON response:", jsonText);
-        throw new Error("The AI returned an invalid format. Please try again.");
+        console.error('Failed to parse Gemini response as JSON:', rawText);
+        throw new Error('Failed to parse Gemini response as JSON. Check console output.');
     }
 }

@@ -1,4 +1,4 @@
-
+﻿
 import React, { useState, useCallback } from 'react';
 import { analyzeScriptAndGeneratePrompts } from './services/geminiService';
 import type { ScriptAnalysis } from './types';
@@ -9,16 +9,16 @@ import { SunoGenerationPanel } from './components/SunoGenerationPanel';
 
 const App: React.FC = () => {
     const [videoUrl, setVideoUrl] = useState<string | null>(null);
+    const [videoFile, setVideoFile] = useState<File | null>(null); //新增
     const [scriptText, setScriptText] = useState<string>('');
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
-    
-    // Analysis State
     const [analysis, setAnalysis] = useState<ScriptAnalysis | null>(null);
 
     const handleVideoUpload = (file: File) => {
         const url = URL.createObjectURL(file);
         setVideoUrl(url);
+        setVideoFile(file); //保存文件本体
     };
 
     const handleScriptUpload = (file: File) => {
@@ -31,8 +31,9 @@ const App: React.FC = () => {
     };
 
     const handleAnalyzeScript = useCallback(async () => {
-        if (!scriptText) {
-            setError('Please provide a script or description to analyze.');
+        //允许「只视频」「只脚本」「视频 + 脚本」
+        if (!scriptText && !videoFile) {
+            setError('Please upload a video or provide a script/description.');
             return;
         }
         setIsLoading(true);
@@ -40,11 +41,14 @@ const App: React.FC = () => {
         setAnalysis(null);
 
         try {
-            const result = await analyzeScriptAndGeneratePrompts(scriptText);
+            const result = await analyzeScriptAndGeneratePrompts(
+                scriptText,
+                videoFile || undefined   //传入视频文件
+            );
             setAnalysis(result);
         } catch (err) {
             console.error(err);
-             if (err instanceof Error) {
+            if (err instanceof Error) {
                 setError(`An error occurred: ${err.message}`);
             } else {
                 setError('An unknown error occurred during generation.');
@@ -52,7 +56,7 @@ const App: React.FC = () => {
         } finally {
             setIsLoading(false);
         }
-    }, [scriptText]);
+    }, [scriptText, videoFile]);
 
     return (
         <div className="min-h-screen bg-gray-900 text-gray-200 font-sans">

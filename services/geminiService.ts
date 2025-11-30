@@ -1,7 +1,7 @@
-ï»¿import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import type { ScriptAnalysis } from '../types';
 
-//å•ä¾‹å®¢æˆ·ç«¯ï¼Œå¤ç”¨è¿æ¥
+// Lazily initialize the AI client to avoid errors on module load.
 let ai: GoogleGenAI | null = null;
 
 function getAiClient(): GoogleGenAI {
@@ -13,7 +13,7 @@ function getAiClient(): GoogleGenAI {
         ai = new GoogleGenAI({
             apiKey: API_KEY,
             httpOptions: {
-                //ç»§ç»­èµ°ä½ çš„ä»£ç†ï¼Œä¸æ”¹è¿™ä¸€è¡Œ
+                // Ê¹ÓÃÄãµÄµÚÈı·½´úÀí base URL
                 baseUrl: "https://yunwu.ai",
             },
         });
@@ -21,86 +21,77 @@ function getAiClient(): GoogleGenAI {
     return ai;
 }
 
-// æµè§ˆå™¨ç¯å¢ƒä¸‹æŠŠ File è½¬æˆ base64 å­—ç¬¦ä¸²
+/**
+ * °ÑÇ°¶ËÉÏ´«µÄ File ×ª³É base64£¬ÓÃÓÚ inlineData.data
+ */
 async function fileToBase64(file: File): Promise<string> {
-    const arrayBuffer = await file.arrayBuffer();
-    const bytes = new Uint8Array(arrayBuffer);
+    const buffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
     let binary = "";
-    for (let i = 0; i < bytes.length; i++) {
+    const len = bytes.byteLength;
+
+    for (let i = 0; i < len; i++) {
         binary += String.fromCharCode(bytes[i]);
     }
-    // window.btoa åœ¨æµè§ˆå™¨é‡Œå¯ç”¨
+    // ä¯ÀÀÆ÷»·¾³ÏÂÓÃ btoa
     return btoa(binary);
 }
 
 /**
- * å¤šæ¨¡æ€è„šæœ¬åˆ†æï¼š
- * - scriptText: æ–‡æœ¬è„šæœ¬/æè¿°ï¼Œå¯ä¸ºç©º
- * - videoFile: ä¸Šä¼ çš„è§†é¢‘ Fileï¼Œå¯ä¸ºç©º
- *
- * è‡³å°‘è¦æœ‰ä¸€ä¸ªå­˜åœ¨ï¼ˆåœ¨ App.tsx é‡Œå·²ç»åˆ¤æ–­è¿‡ï¼‰
+ * Ö§³Ö£º
+ * - Ö»ÓĞ½Å±¾/ÎÄ±¾
+ * - ½Å±¾ + ÊÓÆµ£¨ÍÆ¼ö£©
+ * »á·µ»Ø ScriptAnalysis£¨summary¡¢mood¡¢title¡¢music_prompt£©
  */
 export async function analyzeScriptAndGeneratePrompts(
     scriptText: string,
-    videoFile?: File
+    videoFile?: File | null
 ): Promise<ScriptAnalysis> {
     const aiClient = getAiClient();
     const model = "gemini-2.5-flash";
 
-    // 1. æ„é€ æç¤ºè¯ï¼ˆä¸ç›´æ¥æŠŠè„šæœ¬æ’è¿›é•¿ promptï¼Œè€Œæ˜¯æ”¾åˆ°å•ç‹¬ text partï¼‰
-    const systemPrompt = `
-You are a professional film score composer.
-You will receive:
-- Optionally: a video (movie clip / short video).
-- Optionally: a script or description of the video.
+    if (!scriptText.trim() && !videoFile) {
+        throw new Error("Please provide at least a video or a script/description.");
+    }
 
-Your goal is to create a SINGLE, cohesive music generation prompt
-that acts as the soundtrack for the entire video.
+    // ×ÜÌåÖ¸Áî£¨½ÇÉ«ËµÃ÷ + ÒªÇó·µ»Ø JSON£©
+    const instruction = `
+You are a professional film score composer.
+You will receive a video (and optionally its script / description).
+Your goal is to create a single, cohesive music generation prompt that acts as the soundtrack for the entire video.
 
 Output JSON with the following fields:
 1. summary: A brief 1-sentence summary of the video's content.
 2. mood: 2-3 words describing the emotional tone (e.g., "Melancholic, Hopeful").
 3. title: A creative title for the soundtrack.
-4. music_prompt: A detailed description for an AI music generator (Suno),
-   focusing on instruments, tempo, genre, and atmosphere.
-   - Do NOT include lyrics.
+4. music_prompt: A detailed description for an AI music generator (Suno). 
+   - Focus on instruments, tempo, genre, and atmosphere.
+   - Do NOT include lyrics. 
    - Keep it under 450 characters.
+   - Example: "A cinematic orchestral piece building from a quiet piano intro into a heroic crescendo with strings and brass, ending on a triumphant note."
 `.trim();
 
-    const parts: any[] = [];
+    const parts: any[] = [
+        { text: instruction }
+    ];
 
-    // 2. å¦‚æœæœ‰è§†é¢‘ï¼ŒæŠŠå®ƒä½œä¸º inlineData ä¼ è¿›å»ï¼ˆå¤šæ¨¡æ€ï¼‰
-    if (videoFile) {
-        console.log('[Gemini] attaching video file to request', {
-            name: videoFile.name,
-            type: videoFile.type,
-            size: videoFile.size,
+    if (scriptText.trim()) {
+        parts.push({
+            text: `Here is the script or description of the video:\n\n${scriptText.trim()}`
         });
+    }
 
-        const base64 = await fileToBase64(videoFile);
-
+    if (videoFile) {
+        // °ÑÊÓÆµ×÷Îª inlineData ´«¸ø Gemini£¬¶àÄ£Ì¬ÊÓÆµÀí½âÊ¾ÀıÔÚÄãÉÏ´«µÄÎÄµµÀï¾ÍÊÇÕâÖÖ½á¹¹
+        const base64Video = await fileToBase64(videoFile);
         parts.push({
             inlineData: {
-                data: base64,
                 mimeType: videoFile.type || "video/mp4",
+                data: base64Video,
             },
         });
     }
 
-    // 3. æŠŠç³»ç»Ÿæç¤ºå’Œè„šæœ¬æ–‡æœ¬ä½œä¸º text éƒ¨åˆ†
-    const scriptTextForModel =
-        scriptText && scriptText.trim().length > 0
-            ? scriptText
-            : "(No script text provided. Infer as much as possible from the video alone.)";
-
-    parts.push(
-        { text: systemPrompt },
-        {
-            text: `SCRIPT_OR_DESCRIPTION:\n${scriptTextForModel}`,
-        }
-    );
-
-    // 4. è°ƒç”¨ä»£ç†ç‰ˆ Gemini çš„ generateContent
     const response = await aiClient.models.generateContent({
         model,
         contents: [
@@ -110,7 +101,6 @@ Output JSON with the following fields:
             },
         ],
         config: {
-            // è®©ä»£ç†ç›´æ¥å¸®ä½ åš JSON ç»“æ„åŒ–è¾“å‡º
             responseMimeType: "application/json",
             responseSchema: {
                 type: Type.OBJECT,
@@ -125,24 +115,12 @@ Output JSON with the following fields:
         },
     });
 
-    const jsonText = (response.text || "").toString().trim();
-    console.log('[Gemini] raw jsonText:', jsonText);
-
-    if (!jsonText) {
-        throw new Error("Empty response from Gemini.");
-    }
-
+    const jsonText = response.text.trim();
     try {
         const parsedResult = JSON.parse(jsonText);
-        const result: ScriptAnalysis = {
-            summary: parsedResult.summary ?? "",
-            mood: parsedResult.mood ?? "",
-            title: parsedResult.title ?? "",
-            music_prompt: parsedResult.music_prompt ?? "",
-        };
-        return result;
+        return parsedResult as ScriptAnalysis;
     } catch (e) {
-        console.error("Failed to parse JSON response:", jsonText, e);
-        throw new Error("The AI returned an invalid JSON format. Please try again or check the console log.");
+        console.error("Failed to parse JSON response:", jsonText);
+        throw new Error("The AI returned an invalid format. Please try again.");
     }
 }
